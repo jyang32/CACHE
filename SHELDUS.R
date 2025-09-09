@@ -3,95 +3,133 @@
 ## Author: June Yang
 ## 07/18/2025
 
+rm(list = ls())
+
 library(tidyverse)
 library(readxl)
 library(lubridate)
 
-# --------------- read in SHELDUS data ---------------------
-direct_loss_path <- "../../SHELDUS-Order#3958/direct_loss_aggregated_output_5040.csv"
-
 # --------------- define ENSO periods ----------------------
 # https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/ONI_v5.php
-direct_loss_df <- read_csv(direct_loss_path) %>%
-  mutate(period_label = case_when(
-      Year == 2015 & Month == 9 ~ "2m_before",
-      Year == 2015 & Month == 10 ~ "1m_before",
-      (Year == 2015 & Month >= 11) | (Year == 2016 & Month <= 1) ~ "ENSO",
-      Year == 2016 & Month == 2 ~ "1m_after",
-      Year == 2016 & Month == 3  ~ "2m_after",
-      Year == 2016 & Month %in% 4:6 ~ "3to6m_after",
-      TRUE ~ NA_character_
-  ))
+# https://www.cpc.ncep.noaa.gov/products/precip/CWlink/ENSO/composites/
+# https://www.cpc.ncep.noaa.gov/products/analysis_monitoring/ensocycle/nawinter.shtml
 
-# calculate direct loss 
-direct_loss_df <- direct_loss_df %>%
-  mutate(total_direct_loss = `CropDmg(ADJ 2023)` + `PropertyDmg(ADJ 2023)`)
 
-# summarize loss by period for all states
-direct_loss_df %>%
-    filter(!is.na(period_label)) %>%
-    group_by(period_label) %>%
+# load ONI data
+oni <- read_csv("oni_NOAA_1970_2023_long.csv")
+
+# categorize ONI value 
+## With optional constraints: A “true” El Niño / La Niña event starts when this condition holds for 5+ consecutive overlapping seasons (from NOAA)
+
+oni <- oni %>%
+    mutate(
+        ONI_Category = case_when(
+            ONI >= 0.5 ~ "El Nino",
+            ONI <= -0.5 ~ "La Nina",
+            TRUE ~ "Neutral"
+        )
+    )
+
+
+# --------------- read in SHELDUS data ---------------------
+## calculate direct loss
+
+direct_loss_path <- "data/SHELDUS-Order#3958/direct_loss_aggregated_output_5040.csv"
+
+sheldus <- read_csv(direct_loss_path) 
+
+# First, convert to a date
+sheldus <- sheldus %>%
+    mutate(Date = ymd(paste(Year, Month, "01", sep = "-")))
+
+# Function to assign each month to an ONI-style 3-month season
+month_to_season <- function(month) {
+    c("DJF", "JFM", "FMA", "MAM", "AMJ", "MJJ", 
+      "JJA", "JAS", "ASO", "SON", "OND", "NDJ")[month]
+}
+
+# Add seasonal label and correct season year
+sheldus_seasonal <- sheldus %>%
+    mutate(
+        Month = month(Date),
+        Season = month_to_season(Month),
+        Season_Year = case_when(
+            Season == "DJF" & Month == 12 ~ Year + 1,
+            Season == "NDJ" & Month == 11 ~ Year + 1,
+            Season == "NDJ" & Month == 12 ~ Year + 1,
+            TRUE ~ Year
+        )
+    )
+
+# Aggregate by County + Season + Season_Year
+sheldus_agg <- sheldus_seasonal %>%
+    mutate(direct_loss = `CropDmg(ADJ 2023)` + `PropertyDmg(ADJ 2023)`) %>%
+    group_by(StateName, CountyName, County_FIPS, Season_Year, Season) %>%
     summarise(
-        mean_loss = mean(total_direct_loss, na.rm = TRUE),
-        median_loss = median(total_direct_loss, na.rm = TRUE),
-        total_loss = sum(total_direct_loss, na.rm = TRUE),
-        record_count = n()
-    ) %>%
-    arrange(match(period_label, c("2m_before", "1m_before", "ENSO", "1m_after", "2m_after", "3to6m_after")))
+        total_loss = sum(direct_loss, na.rm = TRUE),
+        .groups = "drop"
+    )
+
+# rename for clarity
+sheldus_agg <- sheldus_agg %>%
+    rename(Year = Season_Year)
+
 
 # geographical differences
 # NOAA climate regions by state (https://www.ncei.noaa.gov/access/monitoring/reference-maps/us-climate-regions)
 # Pueto Rico temporarily excluded from climate region (might be different from continent?)
 noaa_regions <- tibble::tibble(
     StateName = c(
-        "MAINE", "NEW HAMPSHIRE", "VERMONT", "MASSACHUSETTS", "RHODE ISLAND", "CONNECTICUT", "NEW YORK", "NEW JERSEY", "PENNSYLVANIA"
+        "CONNECTICUT","DELAWARE","MAINE","MARYLAND","MASSACHUSETTS","NEW HAMPSHIRE","NEW JERSEY","NEW YORK","PENNSYLVANIA","RHODE ISLAND","VERMONT"
     ),
     Region = "Northeast"
 ) %>%
-    add_row(StateName = c("OHIO", "INDIANA", "ILLINOIS", "MICHIGAN", "WISCONSIN"), Region = "Upper Midwest") %>%
-    add_row(StateName = c("IOWA", "MISSOURI", "MINNESOTA", "NORTH DAKOTA", "SOUTH DAKOTA", "NEBRASKA", "KANSAS"), Region = "Northern Plains") %>%
-    add_row(StateName = c("DELAWARE", "MARYLAND", "VIRGINIA", "WEST VIRGINIA", "KENTUCKY", "TENNESSEE", "NORTH CAROLINA", "SOUTH CAROLINA", "GEORGIA", "ALABAMA"), Region = "Southeast") %>%
-    add_row(StateName = c("ARKANSAS", "LOUISIANA", "MISSISSIPPI"), Region = "South") %>%
-    add_row(StateName = c("TEXAS", "OKLAHOMA"), Region = "South") %>%
-    add_row(StateName = c("NEW MEXICO", "ARIZONA"), Region = "Southwest") %>%
-    add_row(StateName = c("NEVADA", "UTAH", "COLORADO", "WYOMING", "IDAHO", "MONTANA"), Region = "Northwest") %>%
-    add_row(StateName = c("WASHINGTON", "OREGON"), Region = "Pacific Northwest") %>%
-    add_row(StateName = c("CALIFORNIA"), Region = "West Coast") %>%
-    add_row(StateName = c("FLORIDA"), Region = "Southeast") %>%
-    add_row(StateName = c("ALASKA"), Region = "Alaska") %>%
-    add_row(StateName = c("HAWAII"), Region = "Pacific Islands")
+    add_row(StateName = c("IOWA", "MINNESOTA", "MICHIGAN", "WISCONSIN"), Region = "Upper Midwest") %>%
+    add_row(StateName = c("MONTANA", "NORTH DAKOTA", "SOUTH DAKOTA", "NEBRASKA", "WYOMING"), Region = "Northern Plains") %>%
+    add_row(StateName = c("VIRGINIA", "NORTH CAROLINA", "SOUTH CAROLINA", "GEORGIA", "ALABAMA","FLORIDA"), Region = "Southeast") %>%
+    add_row(StateName = c("ARKANSAS", "KANSAS", "OKLAHOMA","LOUISIANA", "MISSISSIPPI","TEXAS"), Region = "South") %>%
+    add_row(StateName = c("NEW MEXICO", "ARIZONA","COLORADO","UTAH"), Region = "Southwest") %>%
+    add_row(StateName = c("IDAHO", "OREGON","WASHINGTON"), Region = "Northwest") %>%
+    add_row(StateName = c("CALIFORNIA","NEVADA"), Region = "West") %>%
+    add_row(StateName = c("ILLINOIS","INDIANA","KENTUCKY","MISSOURI","OHIO","TENNESSEE","WEST VIRGINIA"), Region = "Ohio Valley") 
 
 # check if all states in SHELDUS data are covered by NOAA regions
 
-anti_join(direct_loss_df, noaa_regions, by = "StateName") %>% distinct(StateName)
-# join with SHELDUS data
-direct_loss_df <- direct_loss_df %>%
-    left_join(noaa_regions, by = c("StateName" = "StateName"))
+anti_join(sheldus_agg, noaa_regions, by = "StateName") %>% distinct(StateName)
 
-# summarize loss by period and region
-direct_loss_df %>%
-    filter(!is.na(period_label), !is.na(Region)) %>%
-    group_by(Region, period_label) %>%
+# join with SHELDUS data
+sheldus_agg_with_oni <- sheldus_agg %>%
+    left_join(noaa_regions, by = c("StateName" = "StateName")) %>% 
+    left_join(oni, by = c("Year", "Season"))
+
+# --------------- calculate direct loss by ENSO period ---------------------
+
+loss_summary <- sheldus_agg_with_oni %>%
+    filter(!is.na(Region)) %>% 
+    group_by(Region, ONI_Category) %>%
     summarise(
-        mean_loss = mean(total_direct_loss, na.rm = TRUE),
-        median_loss = median(total_direct_loss, na.rm = TRUE),
-        total_loss = sum(total_direct_loss, na.rm = TRUE),
-        record_count = n()
+        avg_total_loss = mean(total_loss, na.rm = TRUE),
+        median_total_loss = median(total_loss, na.rm = TRUE),
+        sd_total_loss = sd(total_loss, na.rm = TRUE),
+        n = n(),
+        .groups = "drop"
     ) %>%
-    arrange(Region, match(period_label, c("2m_before", "1m_before", "ENSO", "1m_after", "2m_after", "3to6m_after")))
+    arrange(Region, ONI_Category)
 
 # ------------------ visualization ---------------------
-df_summary <- direct_loss_df %>%
-    filter(!is.na(period_label), !is.na(Region)) %>%
-    group_by(Region, period_label) %>%
-    summarise(mean_loss = mean(total_direct_loss, na.rm = TRUE))
 
-df_summary <- df_summary %>%
-    mutate(period_label = factor(period_label, levels = c("2m_before", "1m_before", "ENSO", "1m_after", "2m_after", "3to6m_after")))
+p <- ggplot(loss_summary, aes(x = Region, y = avg_total_loss, fill = ONI_Category)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    geom_errorbar(aes(ymin = avg_total_loss - sd_total_loss / sqrt(n),
+                      ymax = avg_total_loss + sd_total_loss / sqrt(n)),
+                  position = position_dodge(width = 0.8), width = 0.3) +
+    labs(
+        title = "Average Total Loss by ENSO Phase and Region",
+        x = "Region",
+        y = "Average Total Loss (USD)",
+        fill = "ENSO Phase"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
 
-ggplot(df_summary, aes(x = period_label, y = mean_loss, group = Region, color = Region)) +
-    geom_line() +
-    geom_point() +
-    facet_wrap(~ Region, scales = "free_y") +
-    theme_minimal() + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#ggsave("ENSO_direct_loss_by_region.pdf", plot = p, width = 10, height = 6)
