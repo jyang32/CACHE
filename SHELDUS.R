@@ -16,7 +16,7 @@ library(lubridate)
 
 
 # load ONI data
-oni <- read_csv("oni_NOAA_1970_2023_long.csv")
+oni <- read_csv("data/oni_NOAA_1970_2023_long.csv")
 
 # categorize ONI value 
 ## With optional constraints: A “true” El Niño / La Niña event starts when this condition holds for 5+ consecutive overlapping seasons (from NOAA)
