@@ -28,4 +28,8 @@ empower_agg <- empower_seasonal %>%
     select(FIPS_Code, Year, Season, avg_medicare_benes, avg_power_dependent_devices_dme)
 
 df <- left_join(empower_agg, sheldus_agg_with_oni, by = c("FIPS_Code" = "County_FIPS", "Year" = "Year", "Season"))
-# ? check data for NAs
+
+# ? SHELDUS only contains events data
+
+df_final <- df %>% 
+    filter(is.na(total_loss)==FALSE)
